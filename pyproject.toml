@@ -1,0 +1,17 @@
+[project]
+name = "botcalendar2"
+version = "0.1.0"
+description = "Telegram bot with calendar for notes"
+authors = [
+    {name = "Clavker",email = "Clavker.Fust@gmail.com"}
+]
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "aiogram (>=3.25.0,<4.0.0)",
+    "aiosqlite (>=0.22.1,<0.23.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
