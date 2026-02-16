@@ -16,4 +16,5 @@ https://core.telegram.org/bots/api
 Имя бота: Notes Calendar Bot
 Ник бота: clavker_notes_bot
 
-Остановился на задании №3
+База данных: botcalendar
+Пользователь: botuser (пароль 'secure_password')
