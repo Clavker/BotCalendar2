@@ -4,37 +4,28 @@ from psycopg2 import sql
 
 class Calendar:
     def __init__(self, db_config):
-        """
-        Инициализация с параметрами подключения к БД
-        db_config = {
-            'host': 'localhost',
-            'database': 'botcalendar',
-            'user': 'botuser',
-            'password': 'secure_password'
-        }
-        """
         self.db_config = db_config
 
     def _get_connection(self):
-        """Внутренний метод для получения подключения к БД"""
         return psycopg2.connect(**self.db_config)
 
-    # CREATE - создание события
-    def create_event(self, event_name, event_date, event_time, event_details):
-        """Добавляет новое событие в базу данных"""
+    # CREATE - создание события для конкретного пользователя
+    def create_event(self, user_id, event_name, event_date, event_time,
+                     event_details):
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute("""
-                INSERT INTO events (name, date, time, details)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO events (user_id, name, date, time, details)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id;
-            """, (event_name, event_date, event_time, event_details))
+            """, (user_id, event_name, event_date, event_time, event_details))
 
             event_id = cursor.fetchone()[0]
             conn.commit()
-            print(f"✅ Событие '{event_name}' создано с ID: {event_id}")
+            print(
+                f"✅ Событие '{event_name}' создано для user {user_id} с ID: {event_id}")
             return event_id
 
         except Exception as e:
@@ -45,9 +36,8 @@ class Calendar:
             cursor.close()
             conn.close()
 
-    # READ - чтение одного события по ID
-    def read_event(self, event_id):
-        """Возвращает событие по его ID"""
+    # READ - чтение события (только если принадлежит пользователю)
+    def read_event(self, user_id, event_id):
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -55,8 +45,8 @@ class Calendar:
             cursor.execute("""
                 SELECT id, name, date, time, details
                 FROM events
-                WHERE id = %s;
-            """, (event_id,))
+                WHERE id = %s AND user_id = %s;
+            """, (event_id, user_id))
 
             row = cursor.fetchone()
             if row:
@@ -69,7 +59,8 @@ class Calendar:
                 }
                 return event
             else:
-                print(f"Событие с ID {event_id} не найдено")
+                print(
+                    f"Событие с ID {event_id} не найдено или не принадлежит пользователю")
                 return None
 
         except Exception as e:
@@ -79,12 +70,8 @@ class Calendar:
             cursor.close()
             conn.close()
 
-    # EDIT - редактирование события
-    def edit_event(self, event_id, **kwargs):
-        """
-        Редактирует поля события.
-        kwargs может содержать: name, date, time, details
-        """
+    # EDIT - редактирование события (только если принадлежит пользователю)
+    def edit_event(self, user_id, event_id, **kwargs):
         if not kwargs:
             print("Не указаны поля для обновления")
             return None
@@ -94,13 +81,13 @@ class Calendar:
 
         # Формируем SET часть запроса динамически
         set_clause = ", ".join([f"{key} = %s" for key in kwargs.keys()])
-        values = list(kwargs.values()) + [event_id]
+        values = list(kwargs.values()) + [event_id, user_id]
 
         try:
             query = sql.SQL("""
                 UPDATE events
                 SET {}
-                WHERE id = %s
+                WHERE id = %s AND user_id = %s
                 RETURNING id;
             """).format(sql.SQL(set_clause))
 
@@ -109,10 +96,11 @@ class Calendar:
 
             if updated_id:
                 conn.commit()
-                print(f"✅ Событие ID {event_id} обновлено")
+                print(f"✅ Событие ID {event_id} обновлено для user {user_id}")
                 return event_id
             else:
-                print(f"Событие с ID {event_id} не найдено")
+                print(
+                    f"Событие с ID {event_id} не найдено или не принадлежит пользователю")
                 return None
 
         except Exception as e:
@@ -123,26 +111,26 @@ class Calendar:
             cursor.close()
             conn.close()
 
-    # DELETE - удаление события
-    def delete_event(self, event_id):
-        """Удаляет событие по ID"""
+    # DELETE - удаление события (только если принадлежит пользователю)
+    def delete_event(self, user_id, event_id):
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute("""
                 DELETE FROM events
-                WHERE id = %s
+                WHERE id = %s AND user_id = %s
                 RETURNING id;
-            """, (event_id,))
+            """, (event_id, user_id))
 
             deleted_id = cursor.fetchone()
             if deleted_id:
                 conn.commit()
-                print(f"✅ Событие ID {event_id} удалено")
+                print(f"✅ Событие ID {event_id} удалено для user {user_id}")
                 return event_id
             else:
-                print(f"Событие с ID {event_id} не найдено")
+                print(
+                    f"Событие с ID {event_id} не найдено или не принадлежит пользователю")
                 return None
 
         except Exception as e:
@@ -153,9 +141,8 @@ class Calendar:
             cursor.close()
             conn.close()
 
-    # DISPLAY ALL - показать все события
-    def display_events(self):
-        """Возвращает список всех событий"""
+    # DISPLAY ALL - показать все события пользователя
+    def display_events(self, user_id):
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -163,17 +150,18 @@ class Calendar:
             cursor.execute("""
                 SELECT id, name, date, time, details
                 FROM events
+                WHERE user_id = %s
                 ORDER BY date, time;
-            """)
+            """, (user_id,))
 
             rows = cursor.fetchall()
             events = []
 
             if not rows:
-                print("📭 Список событий пуст")
+                print(f"📭 Список событий для user {user_id} пуст")
                 return events
 
-            print("\n=== 📅 ВСЕ СОБЫТИЯ ===")
+            print(f"\n=== 📅 СОБЫТИЯ ПОЛЬЗОВАТЕЛЯ {user_id} ===")
             for row in rows:
                 event = {
                     'id': row[0],
@@ -196,6 +184,38 @@ class Calendar:
         except Exception as e:
             print(f"❌ Ошибка при получении списка: {e}")
             return []
+        finally:
+            cursor.close()
+            conn.close()
+
+    # Регистрация пользователя (если нужна)
+    def register_user(self, user_id, username=None, first_name=None,
+                      last_name=None):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                INSERT INTO users (user_id, username, first_name, last_name)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id) DO NOTHING
+                RETURNING user_id;
+            """, (user_id, username, first_name, last_name))
+
+            registered = cursor.fetchone()
+            conn.commit()
+
+            if registered:
+                print(f"✅ Пользователь {user_id} зарегистрирован")
+                return True
+            else:
+                print(f"ℹ️ Пользователь {user_id} уже существует")
+                return False
+
+        except Exception as e:
+            conn.rollback()
+            print(f"❌ Ошибка при регистрации: {e}")
+            return False
         finally:
             cursor.close()
             conn.close()
