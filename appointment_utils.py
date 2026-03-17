@@ -29,7 +29,8 @@ def is_user_free(user_id, appointment_date, appointment_time):
         ).exclude(status='cancelled')
 
         return not existing.exists()
-    except User.DoesNotExist:
+    except Exception:
+        # Если пользователь не найден или другая ошибка
         return False
 
 
@@ -59,10 +60,6 @@ def create_appointment(organizer_id, participant_id, event_id,
             status='pending'
         )
         return True, "Приглашение отправлено", appointment
-    except User.DoesNotExist:
-        return False, "Пользователь не найден", None
-    except Event.DoesNotExist:
-        return False, "Событие не найдено", None
     except Exception as e:
         return False, f"Ошибка: {e}", None
 
@@ -74,7 +71,7 @@ def confirm_appointment(appointment_id):
         appointment.status = 'confirmed'
         appointment.save()
         return True, "Встреча подтверждена"
-    except Appointment.DoesNotExist:
+    except Exception:
         return False, "Встреча не найдена"
 
 
@@ -85,7 +82,7 @@ def cancel_appointment(appointment_id):
         appointment.status = 'cancelled'
         appointment.save()
         return True, "Встреча отменена"
-    except Appointment.DoesNotExist:
+    except Exception:
         return False, "Встреча не найдена"
 
 
@@ -101,5 +98,5 @@ def get_user_appointments(user_id, status=None):
             appointments = appointments.filter(status=status)
 
         return appointments
-    except User.DoesNotExist:
+    except Exception:
         return []
