@@ -98,3 +98,46 @@ def get_user_stats(telegram_id):
         }
     except Exception:
         return None
+
+
+# ============== НОВЫЕ ФУНКЦИИ ==============
+
+def set_event_public(telegram_id, event_id, is_public=True):
+    """
+    Устанавливает флаг публичности события
+    """
+    try:
+        from events.models import Event
+        event = Event.objects.get(id=event_id, user=telegram_id)
+        event.is_public = is_public
+        event.save()
+        return True, f"Событие теперь {'публичное' if is_public else 'приватное'}"
+    except Event.DoesNotExist:
+        return False, "Событие не найдено или не принадлежит вам"
+    except Exception as e:
+        return False, f"Ошибка: {e}"
+
+
+def get_public_events_by_user(target_telegram_id, requesting_user_id=None):
+    """
+    Возвращает публичные события пользователя target_telegram_id
+    Если requesting_user_id == target_telegram_id, показывает все события
+    """
+    from events.models import Event
+
+    filters = {'user': target_telegram_id}
+
+    # Если запрашивает не владелец, показываем только публичные
+    if requesting_user_id != target_telegram_id:
+        filters['is_public'] = True
+
+    events = Event.objects.filter(**filters).order_by('date', 'time')
+    return events
+
+
+def get_all_public_events():
+    """
+    Возвращает все публичные события всех пользователей
+    """
+    from events.models import Event
+    return Event.objects.filter(is_public=True).order_by('date', 'time')

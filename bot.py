@@ -42,12 +42,12 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# Параметры подключения к базе данных из переменных окружения
+# Параметры подключения к базе данных
 DB_CONFIG = {
     'host': os.environ.get('POSTGRES_HOST', 'localhost'),
     'database': os.environ.get('POSTGRES_DB', 'botcalendar2'),
     'user': os.environ.get('POSTGRES_USER', 'postgres'),
-    'password': os.environ.get('POSTGRES_PASSWORD', '123654'),
+    'password': os.environ.get('POSTGRES_PASSWORD', 'postgres'),
     'port': os.environ.get('POSTGRES_PORT', '5432'),
 }
 
@@ -206,7 +206,7 @@ async def list_events_handler(message: Message):
         await message.answer(f"❌ Ошибка: {e}")
 
 
-# ==================== ОБРАБОТЧИКИ ДЛЯ ПРОФИЛЯ И КАЛЕНДАРЯ ====================
+# ==================== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПРОФИЛЯ И КАЛЕНДАРЯ ====================
 
 @dp.message(Command("register"))
 async def register_handler(message: Message):
@@ -280,7 +280,6 @@ async def mycalendar_handler(message: Message):
         user_id = message.from_user.id
 
         # Получаем параметры месяца/года из команды
-        # /mycalendar 3 2026 - март 2026
         args = message.text.split()
         month = None
         year = None
@@ -432,7 +431,6 @@ async def public_events_handler(message: Message):
         for event in events:
             # Получаем username владельца
             try:
-                from events.models import TelegramProfile
                 profile = TelegramProfile.objects.get(telegram_id=event.user)
                 owner_name = f"@{profile.telegram_username}" if profile.telegram_username else str(
                     event.user)
@@ -556,9 +554,12 @@ async def invite_handler(message: Message):
             )
 
             # Отправляем уведомление участнику
+            from events.models import TelegramProfile
             try:
+                participant_profile = TelegramProfile.objects.get(
+                    user=participant)
                 await bot.send_message(
-                    participant.id,
+                    participant_profile.telegram_id,
                     f"📅 **Новое приглашение!**\n\n"
                     f"👤 Организатор: @{message.from_user.username}\n"
                     f"📌 Событие: {appointment.event.name}\n"
@@ -568,8 +569,8 @@ async def invite_handler(message: Message):
                     f"Для подтверждения: /confirm {appointment.id}\n"
                     f"Для отмены: /cancel_appointment {appointment.id}"
                 )
-            except:
-                pass  # Если не удалось отправить уведомление
+            except Exception as e:
+                print(f"Не удалось отправить уведомление: {e}")
         else:
             await message.answer(f"❌ {msg}")
 
@@ -590,6 +591,22 @@ async def confirm_handler(message: Message):
 
         appointment_id = int(args[1])
         success, msg = confirm_appointment(appointment_id)
+
+        if success:
+            # Получаем информацию о встрече для уведомления
+            from events.models import Appointment, TelegramProfile
+            appointment = Appointment.objects.get(id=appointment_id)
+            organizer_profile = TelegramProfile.objects.get(
+                user=appointment.organizer)
+
+            # Отправляем уведомление организатору
+            await bot.send_message(
+                organizer_profile.telegram_id,
+                f"✅ Пользователь @{message.from_user.username} подтвердил встречу!\n"
+                f"📌 Событие: {appointment.event.name}\n"
+                f"📆 {appointment.date} ⏰ {appointment.time}"
+            )
+
         await message.answer(f"{'✅' if success else '❌'} {msg}")
     except ValueError:
         await message.answer("❌ ID должен быть числом")
@@ -608,6 +625,22 @@ async def cancel_appointment_handler(message: Message):
 
         appointment_id = int(args[1])
         success, msg = cancel_appointment(appointment_id)
+
+        if success:
+            # Получаем информацию о встрече для уведомления
+            from events.models import Appointment, TelegramProfile
+            appointment = Appointment.objects.get(id=appointment_id)
+            organizer_profile = TelegramProfile.objects.get(
+                user=appointment.organizer)
+
+            # Отправляем уведомление организатору
+            await bot.send_message(
+                organizer_profile.telegram_id,
+                f"❌ Пользователь @{message.from_user.username} отменил встречу.\n"
+                f"📌 Событие: {appointment.event.name}\n"
+                f"📆 {appointment.date} ⏰ {appointment.time}"
+            )
+
         await message.answer(f"{'✅' if success else '❌'} {msg}")
     except ValueError:
         await message.answer("❌ ID должен быть числом")
@@ -658,7 +691,7 @@ async def cmd_start(message: Message):
     await message.answer(
         f"👋 Привет, {user.first_name}! Я бот-календарь.\n\n"
         f"📅 **Основные команды:**\n"
-        f"/register - зарегистрироваться\n"
+        f"/register - зарегистрироваться в системе\n"
         f"/profile - личный кабинет\n"
         f"/mycalendar - мой календарь\n\n"
         f"📋 **События:**\n"

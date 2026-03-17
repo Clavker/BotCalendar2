@@ -1,4 +1,4 @@
-# tests/unit/test_calendar_simple.py
+# tests_django/unit/test_calendar_simple.py
 import unittest
 from unittest.mock import patch, MagicMock
 from datetime import date, time

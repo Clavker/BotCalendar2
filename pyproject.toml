@@ -3,7 +3,7 @@ name = "botcalendar2"
 version = "0.1.0"
 description = "Telegram bot with calendar for notes"
 authors = [
-    {name = "Clavker",email = "Clavker.Fust@gmail.com"}
+    {name = "Clavker", email = "Clavker.Fust@gmail.com"}
 ]
 requires-python = ">=3.12,<3.15"
 dependencies = [
@@ -11,21 +11,33 @@ dependencies = [
     "aiosqlite (>=0.22.1,<0.23.0)",
     "psycopg2 (>=2.9.11,<3.0.0)",
     "django (>=6.0.3,<7.0.0)",
-    "psycopg2-binary (>=2.9.11,<3.0.0)",
     "djangorestframework (>=3.16.1,<4.0.0)",
+    "python-dotenv (>=1.1.0,<2.0.0)",
 ]
-
-[tool.poetry]
-package-mode = false
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[dependency-groups]
-dev = [
-    "pytest (>=9.0.2,<10.0.0)",
-    "pytest-asyncio (>=1.3.0,<2.0.0)",
-    "pytest-django (>=4.12.0,<5.0.0)",
-    "pytest-mock (>=3.15.1,<4.0.0)"
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.scripts]
+test = "pytest tests/unit -v"
+test-all = "pytest"
+test-django = "bash -c 'DJANGO_SETTINGS_MODULE=calendar_admin.settings_test pytest calendar_admin/events/tests_django -v'"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+testpaths = [
+    "tests/unit",
+    "calendar_admin/events/tests_django"
 ]
+python_files = "test_*.py"
+asyncio_mode = "auto"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+pytest-asyncio = "^0.26.0"
+pytest-django = "^4.12.0"
+pytest-mock = "^3.15.1"
