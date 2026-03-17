@@ -1,0 +1,28 @@
+# Используем официальный образ Python
+FROM python:3.12-slim
+
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Устанавливаем системные зависимости для psycopg2
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Устанавливаем Poetry
+RUN pip install poetry
+
+# Копируем файлы с зависимостями
+COPY pyproject.toml poetry.lock ./
+
+# Устанавливаем зависимости без установки проекта (--no-root)
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --no-ansi --no-root
+
+# Копируем исходный код бота
+COPY bot.py mycalendar.py appointment_utils.py bot_stats.py profile_utils.py ./
+COPY secrets.py ./
+
+# Команда для запуска бота
+CMD ["python", "bot.py"]

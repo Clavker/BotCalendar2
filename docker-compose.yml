@@ -1,0 +1,82 @@
+version: '3.8'
+
+services:
+  # База данных PostgreSQL
+  db:
+    image: postgres:15
+    container_name: botcalendar_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"  # пробрасываем на порт 5433 хоста, чтобы не конфликтовать с локальной PostgreSQL
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bot_network
+
+  # Django веб-приложение
+  django:
+    build:
+      context: .
+      dockerfile: Dockerfile.django
+    container_name: botcalendar_django
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME}
+      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./calendar_admin:/app/calendar_admin  # для разработки (hot reload)
+    networks:
+      - bot_network
+
+  # Telegram бот
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    container_name: botcalendar_bot
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      django:
+        condition: service_started
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      BOT_TOKEN: ${BOT_TOKEN}
+    volumes:
+      - ./:/app  # для разработки
+    networks:
+      - bot_network
+
+# Тома для сохранения данных
+volumes:
+  postgres_data:
+
+# Сеть для взаимодействия контейнеров
+networks:
+  bot_network:
+    driver: bridge
