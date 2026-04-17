@@ -5,6 +5,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message
 from datetime import datetime
+from collections import defaultdict
+
+# Импорты для работы с публичными событиями (перенесены в начало)
+from events.models import TelegramProfile, Event
+from django.contrib.auth.models import User
 
 # Получаем токен из переменных окружения
 API_TOKEN = os.environ.get('BOT_TOKEN')
@@ -59,23 +64,36 @@ calendar = Calendar(DB_CONFIG)
 
 @dp.message(Command("create_event"))
 async def create_event_handler(message: Message):
+    """Формат: /create_event Название ГГГГ-ММ-ДД ЧЧ:ММ [описание]"""
     try:
         user_id = message.from_user.id
-        # Пока используем заглушки, позже добавим парсинг аргументов
-        event_name = "Тестовое событие"
-        event_date = "2024-12-31"
-        event_time = "12:00"
-        event_details = "Описание события"
+        args = message.text.split(maxsplit=4)
 
-        event_id = calendar.create_event(user_id, event_name, event_date,
-                                         event_time, event_details)
+        if len(args) < 4:
+            await message.answer(
+                "❌ **Формат:** /create_event Название ГГГГ-ММ-ДД ЧЧ:ММ [описание]\n"
+                "📌 **Пример:** /create_event Встреча 2026-12-31 15:00 Обсуждение проекта"
+            )
+            return
+
+        event_name = args[1]
+        date_str = args[2]
+        time_str = args[3]
+        event_details = args[4] if len(args) > 4 else ""
+
+        # Преобразуем дату и время
+        event_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        event_time = datetime.strptime(time_str, "%H:%M").time()
+
+        event_id = calendar.create_event(user_id, event_name, event_date, event_time, event_details)
         if event_id:
             increment_event_count()  # общая статистика
             update_user_stats(user_id, 'create')  # личная статистика
-            await message.answer(
-                f"✅ Событие '{event_name}' создано! ID: {event_id}")
+            await message.answer(f"✅ Событие '{event_name}' создано! ID: {event_id}")
         else:
             await message.answer("❌ Не удалось создать событие")
+    except ValueError as e:
+        await message.answer(f"❌ Неверный формат даты или времени: {e}")
     except Exception as e:
         await message.answer(f"❌ Ошибка при создании события: {e}")
 
@@ -406,19 +424,15 @@ async def public_events_handler(message: Message):
         else:
             # Публичные события конкретного пользователя
             target_username = args[1].lstrip('@')
-            from django.contrib.auth.models import User
             try:
                 target_user = User.objects.get(username=target_username)
-                # Получаем Telegram ID из профиля
-                from events.models import TelegramProfile
                 profile = TelegramProfile.objects.get(user=target_user)
                 target_tg_id = profile.telegram_id
 
                 events = get_public_events_by_user(target_tg_id, user_id)
                 title = f"📢 **Публичные события @{target_username}:**"
             except (User.DoesNotExist, TelegramProfile.DoesNotExist):
-                await message.answer(
-                    f"❌ Пользователь @{target_username} не найден")
+                await message.answer(f"❌ Пользователь @{target_username} не найден")
                 return
 
         if not events:
@@ -426,14 +440,12 @@ async def public_events_handler(message: Message):
             return
 
         # Группируем по пользователям
-        from collections import defaultdict
         by_user = defaultdict(list)
         for event in events:
             # Получаем username владельца
             try:
                 profile = TelegramProfile.objects.get(telegram_id=event.user)
-                owner_name = f"@{profile.telegram_username}" if profile.telegram_username else str(
-                    event.user)
+                owner_name = f"@{profile.telegram_username}" if profile.telegram_username else str(event.user)
             except:
                 owner_name = str(event.user)
             by_user[owner_name].append(event)
@@ -527,12 +539,10 @@ async def invite_handler(message: Message):
         appointment_time = datetime.strptime(time_str, "%H:%M").time()
 
         # Получаем ID участника по username
-        from django.contrib.auth.models import User
         try:
             participant = User.objects.get(username=username)
         except User.DoesNotExist:
-            await message.answer(
-                f"❌ Пользователь @{username} не найден в системе")
+            await message.answer(f"❌ Пользователь @{username} не найден в системе")
             return
 
         # Создаём встречу
@@ -554,10 +564,8 @@ async def invite_handler(message: Message):
             )
 
             # Отправляем уведомление участнику
-            from events.models import TelegramProfile
             try:
-                participant_profile = TelegramProfile.objects.get(
-                    user=participant)
+                participant_profile = TelegramProfile.objects.get(user=participant)
                 await bot.send_message(
                     participant_profile.telegram_id,
                     f"📅 **Новое приглашение!**\n\n"
@@ -594,10 +602,8 @@ async def confirm_handler(message: Message):
 
         if success:
             # Получаем информацию о встрече для уведомления
-            from events.models import Appointment, TelegramProfile
             appointment = Appointment.objects.get(id=appointment_id)
-            organizer_profile = TelegramProfile.objects.get(
-                user=appointment.organizer)
+            organizer_profile = TelegramProfile.objects.get(user=appointment.organizer)
 
             # Отправляем уведомление организатору
             await bot.send_message(
@@ -628,10 +634,8 @@ async def cancel_appointment_handler(message: Message):
 
         if success:
             # Получаем информацию о встрече для уведомления
-            from events.models import Appointment, TelegramProfile
             appointment = Appointment.objects.get(id=appointment_id)
-            organizer_profile = TelegramProfile.objects.get(
-                user=appointment.organizer)
+            organizer_profile = TelegramProfile.objects.get(user=appointment.organizer)
 
             # Отправляем уведомление организатору
             await bot.send_message(
@@ -664,8 +668,6 @@ async def check_free_handler(message: Message):
         check_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         check_time = datetime.strptime(time_str, "%H:%M").time()
 
-        from django.contrib.auth.models import User
-
         try:
             user = User.objects.get(username=username)
         except User.DoesNotExist:
@@ -673,11 +675,9 @@ async def check_free_handler(message: Message):
             return
 
         if is_user_free(user.id, check_date, check_time):
-            await message.answer(
-                f"✅ @{username} свободен {date_str} в {time_str}")
+            await message.answer(f"✅ @{username} свободен {date_str} в {time_str}")
         else:
-            await message.answer(
-                f"❌ @{username} занят {date_str} в {time_str}")
+            await message.answer(f"❌ @{username} занят {date_str} в {time_str}")
 
     except ValueError as e:
         await message.answer(f"❌ Неверный формат даты или времени: {e}")

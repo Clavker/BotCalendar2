@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Тесты
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Виртуальное окружение
+.venv/
+venv/
+ENV/
+env/
+
+# Секреты
+secrets.py
+.env
+.env.docker
+botINFO.txt
+*secret*
+*password*
+*token*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Логи
+*.log
+
+# Системные
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Прочее
+project_dump.txt
