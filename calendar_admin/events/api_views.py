@@ -19,6 +19,7 @@ class EventViewSet(viewsets.ModelViewSet):
     API endpoint для работы с событиями.
     Доступны все CRUD операции.
     """
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     queryset = Event.objects.all().order_by('-date', '-time')
     serializer_class = EventSerializer
 
@@ -47,26 +48,52 @@ class EventViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    def perform_create(self, serializer):
+        """При создании устанавливаем user из запроса (если есть аутентификация)"""
+        user_id = self.request.user.id if hasattr(self.request.user, 'id') else None
+        serializer.save(user=user_id)
+
+    def perform_update(self, serializer):
+        """При обновлении проверяем права"""
+        event = self.get_object()
+        if event.user == self.request.user.id:
+            serializer.save()
+        else:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                "У вас нет прав на редактирование этого события")
+
+    def perform_destroy(self, instance):
+        """При удалении проверяем права"""
+        if instance.user == self.request.user.id:
+            instance.delete()
+        else:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("У вас нет прав на удаление этого события")
+
     @action(detail=False, methods=['get'])
     def public(self, request):
         """Только публичные события всех пользователей"""
-        public_events = Event.objects.filter(is_public=True).order_by('date',
-                                                                      'time')
+        public_events = Event.objects.filter(is_public=True).order_by('date', 'time')
         serializer = PublicEventSerializer(public_events, many=True)
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])
     def share(self, request, pk=None):
-        """Сделать событие публичным"""
+        """Сделать событие публичным (только владелец)"""
         event = self.get_object()
+        if event.user != request.user.id:
+            return Response({'error': 'У вас нет прав'}, status=status.HTTP_403_FORBIDDEN)
         event.is_public = True
         event.save()
         return Response({'status': 'событие опубликовано'})
 
     @action(detail=True, methods=['post'])
     def unshare(self, request, pk=None):
-        """Сделать событие приватным"""
+        """Сделать событие приватным (только владелец)"""
         event = self.get_object()
+        if event.user != request.user.id:
+            return Response({'error': 'У вас нет прав'}, status=status.HTTP_403_FORBIDDEN)
         event.is_public = False
         event.save()
         return Response({'status': 'событие скрыто'})
@@ -76,15 +103,13 @@ class UserEventsView(APIView):
     """
     API endpoint для получения событий конкретного пользователя
     """
+    permission_classes = [permissions.AllowAny]  # публичные события может смотреть кто угодно
 
     def get(self, request, telegram_id):
-        events = Event.objects.filter(user=telegram_id).order_by('date',
-                                                                 'time')
+        events = Event.objects.filter(user=telegram_id).order_by('date', 'time')
 
         # Если запрашивает не владелец, показываем только публичные
-        # (здесь нужна аутентификация, пока упрощаем)
-        is_owner = request.query_params.get('as_owner',
-                                            'false').lower() == 'true'
+        is_owner = request.query_params.get('as_owner', 'false').lower() == 'true'
 
         if not is_owner:
             events = events.filter(is_public=True)
@@ -97,6 +122,7 @@ class TelegramProfileViewSet(viewsets.ReadOnlyModelViewSet):
     """
     API endpoint для просмотра профилей (только чтение)
     """
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     queryset = TelegramProfile.objects.all().order_by('-created_at')
     serializer_class = TelegramProfileSerializer
     lookup_field = 'telegram_id'
@@ -106,6 +132,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     """
     API endpoint для работы со встречами
     """
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
     queryset = Appointment.objects.all().order_by('date', 'time')
     serializer_class = AppointmentSerializer
 
@@ -128,16 +155,20 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def confirm(self, request, pk=None):
-        """Подтвердить встречу"""
+        """Подтвердить встречу (только участник)"""
         appointment = self.get_object()
+        if appointment.participant.id != request.user.id:
+            return Response({'error': 'Только участник может подтвердить встречу'}, status=status.HTTP_403_FORBIDDEN)
         appointment.status = 'confirmed'
         appointment.save()
         return Response({'status': 'встреча подтверждена'})
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
-        """Отменить встречу"""
+        """Отменить встречу (участник или организатор)"""
         appointment = self.get_object()
+        if appointment.participant.id != request.user.id and appointment.organizer.id != request.user.id:
+            return Response({'error': 'У вас нет прав'}, status=status.HTTP_403_FORBIDDEN)
         appointment.status = 'cancelled'
         appointment.save()
         return Response({'status': 'встреча отменена'})
@@ -147,6 +178,7 @@ class StatisticsView(APIView):
     """
     API endpoint для получения статистики
     """
+    permission_classes = [permissions.AllowAny]  # статистику может смотреть кто угодно
 
     def get(self, request):
         from django.db.models import Count, Q
@@ -161,8 +193,7 @@ class StatisticsView(APIView):
             'total_events': Event.objects.count(),
             'public_events': Event.objects.filter(is_public=True).count(),
             'total_appointments': Appointment.objects.count(),
-            'pending_appointments': Appointment.objects.filter(
-                status='pending').count(),
+            'pending_appointments': Appointment.objects.filter(status='pending').count(),
             'stats_by_day': []
         }
 
@@ -172,8 +203,7 @@ class StatisticsView(APIView):
             day_stats = {
                 'date': day,
                 'new_events': Event.objects.filter(date=day).count(),
-                'new_appointments': Appointment.objects.filter(
-                    date=day).count(),
+                'new_appointments': Appointment.objects.filter(date=day).count(),
             }
             stats['stats_by_day'].append(day_stats)
 
