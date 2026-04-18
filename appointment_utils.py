@@ -2,7 +2,6 @@
 import os
 import sys
 import django
-from datetime import datetime
 
 # Настройка Django
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,6 +12,7 @@ django.setup()
 
 from django.contrib.auth.models import User
 from events.models import Appointment, Event
+from django.db import models
 
 
 def is_user_free(user_id, appointment_date, appointment_time):
