@@ -1,14 +1,18 @@
 import asyncio
 import logging
 import os
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
 from datetime import datetime
 from collections import defaultdict
 
-# Импорты для работы с публичными событиями (перенесены в начало)
-from events.models import TelegramProfile, Event
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Импорты Django
+from events.models import Event, TelegramProfile, Appointment
 from django.contrib.auth.models import User
 
 # Получаем токен из переменных окружения
@@ -16,7 +20,6 @@ API_TOKEN = os.environ.get('BOT_TOKEN')
 if not API_TOKEN:
     from secrets import API_TOKEN  # fallback для локальной разработки
 
-from mycalendar import Calendar
 from appointment_utils import (
     create_appointment,
     confirm_appointment,
@@ -40,27 +43,12 @@ from profile_utils import (
     get_all_public_events
 )
 
-# Включаем логирование
-logging.basicConfig(level=logging.INFO)
-
 # Инициализируем бота и диспетчер
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# Параметры подключения к базе данных
-DB_CONFIG = {
-    'host': os.environ.get('POSTGRES_HOST', 'localhost'),
-    'database': os.environ.get('POSTGRES_DB', 'botcalendar2'),
-    'user': os.environ.get('POSTGRES_USER', 'postgres'),
-    'password': os.environ.get('POSTGRES_PASSWORD', 'postgres'),
-    'port': os.environ.get('POSTGRES_PORT', '5432'),
-}
 
-# Создаем глобальный объект календаря с подключением к БД
-calendar = Calendar(DB_CONFIG)
-
-
-# ==================== ОБРАБОТЧИКИ ДЛЯ КАЛЕНДАРЯ ====================
+# ==================== ОБРАБОТЧИКИ ДЛЯ СОБЫТИЙ ====================
 
 @dp.message(Command("create_event"))
 async def create_event_handler(message: Message):
@@ -81,20 +69,26 @@ async def create_event_handler(message: Message):
         time_str = args[3]
         event_details = args[4] if len(args) > 4 else ""
 
-        # Преобразуем дату и время
         event_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         event_time = datetime.strptime(time_str, "%H:%M").time()
 
-        event_id = calendar.create_event(user_id, event_name, event_date, event_time, event_details)
-        if event_id:
-            increment_event_count()  # общая статистика
-            update_user_stats(user_id, 'create')  # личная статистика
-            await message.answer(f"✅ Событие '{event_name}' создано! ID: {event_id}")
-        else:
-            await message.answer("❌ Не удалось создать событие")
+        event = Event.objects.create(
+            user=user_id,
+            name=event_name,
+            date=event_date,
+            time=event_time,
+            details=event_details,
+            is_public=False
+        )
+
+        increment_event_count()
+        update_user_stats(user_id, 'create')
+        await message.answer(f"✅ Событие '{event_name}' создано! ID: {event.id}")
+
     except ValueError as e:
         await message.answer(f"❌ Неверный формат даты или времени: {e}")
     except Exception as e:
+        logger.error(f"Ошибка в create_event_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка при создании события: {e}")
 
 
@@ -102,30 +96,28 @@ async def create_event_handler(message: Message):
 async def read_event_handler(message: Message):
     try:
         user_id = message.from_user.id
-        # Ожидаем: /read_event 1
         args = message.text.split()
         if len(args) < 2:
             await message.answer("📝 Укажите ID события: /read_event 1")
             return
 
         event_id = int(args[1])
-        event = calendar.read_event(user_id, event_id)
-
-        if event:
+        try:
+            event = Event.objects.get(id=event_id, user=user_id)
             response = (
-                f"📅 **Событие #{event['id']}**\n"
-                f"📌 **Название:** {event['name']}\n"
-                f"📆 **Дата:** {event['date']}\n"
-                f"⏰ **Время:** {event['time']}\n"
-                f"📝 **Детали:** {event['details']}"
+                f"📅 **Событие #{event.id}**\n"
+                f"📌 **Название:** {event.name}\n"
+                f"📆 **Дата:** {event.date}\n"
+                f"⏰ **Время:** {event.time}\n"
+                f"📝 **Детали:** {event.details}"
             )
             await message.answer(response)
-        else:
-            await message.answer(
-                f"❌ Событие с ID {event_id} не найдено или не принадлежит вам")
+        except Event.DoesNotExist:
+            await message.answer(f"❌ Событие с ID {event_id} не найдено или не принадлежит вам")
     except ValueError:
         await message.answer("❌ ID события должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в read_event_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -133,7 +125,6 @@ async def read_event_handler(message: Message):
 async def edit_event_handler(message: Message):
     try:
         user_id = message.from_user.id
-        # Формат: /edit_event 1 name "Новое название"
         args = message.text.split(maxsplit=3)
         if len(args) < 4:
             await message.answer(
@@ -147,26 +138,24 @@ async def edit_event_handler(message: Message):
         field = args[2]
         value = args[3]
 
-        # Проверяем допустимость поля
         allowed_fields = ['name', 'date', 'time', 'details']
         if field not in allowed_fields:
-            await message.answer(
-                f"❌ Допустимые поля: {', '.join(allowed_fields)}")
+            await message.answer(f"❌ Допустимые поля: {', '.join(allowed_fields)}")
             return
 
-        # Передаём поле и значение как именованные аргументы
-        result = calendar.edit_event(user_id, event_id, **{field: value})
-
-        if result:
-            increment_edited_events()  # общая статистика
-            update_user_stats(user_id, 'edit')  # личная статистика
+        try:
+            event = Event.objects.get(id=event_id, user=user_id)
+            setattr(event, field, value)
+            event.save()
+            increment_edited_events()
+            update_user_stats(user_id, 'edit')
             await message.answer(f"✅ Событие {event_id} обновлено")
-        else:
-            await message.answer(
-                f"❌ Событие с ID {event_id} не найдено или не принадлежит вам")
+        except Event.DoesNotExist:
+            await message.answer(f"❌ Событие с ID {event_id} не найдено или не принадлежит вам")
     except ValueError:
         await message.answer("❌ ID события должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в edit_event_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -180,18 +169,18 @@ async def delete_event_handler(message: Message):
             return
 
         event_id = int(args[1])
-        result = calendar.delete_event(user_id, event_id)
-
-        if result:
-            increment_cancelled_events()  # общая статистика
-            update_user_stats(user_id, 'delete')  # личная статистика
+        try:
+            event = Event.objects.get(id=event_id, user=user_id)
+            event.delete()
+            increment_cancelled_events()
+            update_user_stats(user_id, 'delete')
             await message.answer(f"✅ Событие {event_id} удалено")
-        else:
-            await message.answer(
-                f"❌ Событие с ID {event_id} не найдено или не принадлежит вам")
+        except Event.DoesNotExist:
+            await message.answer(f"❌ Событие с ID {event_id} не найдено или не принадлежит вам")
     except ValueError:
         await message.answer("❌ ID события должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в delete_event_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -199,7 +188,7 @@ async def delete_event_handler(message: Message):
 async def list_events_handler(message: Message):
     try:
         user_id = message.from_user.id
-        events = calendar.display_events(user_id)
+        events = Event.objects.filter(user=user_id).order_by('date', 'time')
 
         if not events:
             await message.answer("📭 Список ваших событий пуст")
@@ -207,11 +196,11 @@ async def list_events_handler(message: Message):
 
         response = "📋 **Ваши события:**\n\n"
         for event in events:
-            public_mark = "🌐" if event.get('is_public', False) else "🔒"
+            public_mark = "🌐" if event.is_public else "🔒"
             response += (
-                f"{public_mark} **#{event['id']}** {event['name']}\n"
-                f"   📆 {event['date']} ⏰ {event['time']}\n"
-                f"   📝 {event['details']}\n\n"
+                f"{public_mark} **#{event.id}** {event.name}\n"
+                f"   📆 {event.date} ⏰ {event.time}\n"
+                f"   📝 {event.details}\n\n"
             )
 
         if len(response) > 4096:
@@ -221,17 +210,16 @@ async def list_events_handler(message: Message):
             await message.answer(response)
 
     except Exception as e:
+        logger.error(f"Ошибка в list_events_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
-# ==================== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПРОФИЛЯ И КАЛЕНДАРЯ ====================
+# ==================== ОБРАБОТЧИКИ ДЛЯ ПРОФИЛЯ И КАЛЕНДАРЯ ====================
 
 @dp.message(Command("register"))
 async def register_handler(message: Message):
     try:
         user = message.from_user
-
-        # Создаём профиль
         profile, created = get_or_create_profile(
             telegram_id=user.id,
             username=user.username,
@@ -252,12 +240,12 @@ async def register_handler(message: Message):
                 f"Ваш профиль: /profile"
             )
     except Exception as e:
+        logger.error(f"Ошибка в register_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка при регистрации: {e}")
 
 
 @dp.message(Command("profile"))
 async def profile_handler(message: Message):
-    """Показывает личный кабинет пользователя"""
     try:
         user_id = message.from_user.id
         stats = get_user_stats(user_id)
@@ -269,8 +257,6 @@ async def profile_handler(message: Message):
             )
             return
 
-        # Получаем общее количество событий пользователя
-        from events.models import Event
         total_events = Event.objects.filter(user=user_id).count()
 
         response = (
@@ -288,16 +274,14 @@ async def profile_handler(message: Message):
 
         await message.answer(response)
     except Exception as e:
+        logger.error(f"Ошибка в profile_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("mycalendar"))
 async def mycalendar_handler(message: Message):
-    """Показывает календарь пользователя"""
     try:
         user_id = message.from_user.id
-
-        # Получаем параметры месяца/года из команды
         args = message.text.split()
         month = None
         year = None
@@ -314,7 +298,6 @@ async def mycalendar_handler(message: Message):
             except ValueError:
                 pass
 
-        # Если не указаны, берём текущий месяц
         if not month:
             month = datetime.now().month
         if not year:
@@ -323,12 +306,9 @@ async def mycalendar_handler(message: Message):
         events = get_user_calendar(user_id, month, year)
 
         if not events:
-            await message.answer(
-                f"📅 Событий за {month:02d}.{year} нет"
-            )
+            await message.answer(f"📅 Событий за {month:02d}.{year} нет")
             return
 
-        # Группируем события по дням
         calendar_by_day = {}
         for event in events:
             day = event.date.day
@@ -336,10 +316,8 @@ async def mycalendar_handler(message: Message):
                 calendar_by_day[day] = []
             calendar_by_day[day].append(event)
 
-        # Формируем ответ
         month_names = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-                       'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь',
-                       'Декабрь']
+                       'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
 
         response = f"📅 **Календарь: {month_names[month - 1]} {year}**\n\n"
 
@@ -353,13 +331,13 @@ async def mycalendar_handler(message: Message):
             response += "\n"
 
         if len(response) > 4096:
-            # Разбиваем на части
             for i in range(0, len(response), 4096):
                 await message.answer(response[i:i + 4096])
         else:
             await message.answer(response)
 
     except Exception as e:
+        logger.error(f"Ошибка в mycalendar_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -367,7 +345,6 @@ async def mycalendar_handler(message: Message):
 
 @dp.message(Command("share_event"))
 async def share_event_handler(message: Message):
-    """Делает событие публичным: /share_event 1"""
     try:
         args = message.text.split()
         if len(args) != 2:
@@ -382,12 +359,12 @@ async def share_event_handler(message: Message):
     except ValueError:
         await message.answer("❌ ID должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в share_event_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("unshare_event"))
 async def unshare_event_handler(message: Message):
-    """Делает событие приватным: /unshare_event 1"""
     try:
         args = message.text.split()
         if len(args) != 2:
@@ -402,27 +379,20 @@ async def unshare_event_handler(message: Message):
     except ValueError:
         await message.answer("❌ ID должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в unshare_event_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("public"))
 async def public_events_handler(message: Message):
-    """
-    Показывает публичные события
-    /public - все публичные события всех пользователей
-    /public @username - публичные события конкретного пользователя
-    """
     try:
         args = message.text.split()
         user_id = message.from_user.id
 
-        # Получаем события
         if len(args) == 1:
-            # Все публичные события
             events = get_all_public_events()
             title = "📢 **Все публичные события:**"
         else:
-            # Публичные события конкретного пользователя
             target_username = args[1].lstrip('@')
             try:
                 target_user = User.objects.get(username=target_username)
@@ -439,14 +409,13 @@ async def public_events_handler(message: Message):
             await message.answer("📭 Нет публичных событий")
             return
 
-        # Группируем по пользователям
         by_user = defaultdict(list)
         for event in events:
-            # Получаем username владельца
             try:
                 profile = TelegramProfile.objects.get(telegram_id=event.user)
                 owner_name = f"@{profile.telegram_username}" if profile.telegram_username else str(event.user)
-            except:
+            except Exception as e:
+                logger.error(f"Не удалось получить профиль для user_id={event.user}: {e}")
                 owner_name = str(event.user)
             by_user[owner_name].append(event)
 
@@ -470,6 +439,7 @@ async def public_events_handler(message: Message):
             await message.answer(response)
 
     except Exception as e:
+        logger.error(f"Ошибка в public_events_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
@@ -477,7 +447,6 @@ async def public_events_handler(message: Message):
 
 @dp.message(Command("appointments"))
 async def list_appointments_handler(message: Message):
-    """Показывает встречи пользователя"""
     try:
         user_id = message.from_user.id
         appointments = get_user_appointments(user_id)
@@ -510,15 +479,12 @@ async def list_appointments_handler(message: Message):
         else:
             await message.answer(response)
     except Exception as e:
+        logger.error(f"Ошибка в list_appointments_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("invite"))
 async def invite_handler(message: Message):
-    """
-    Формат: /invite @username event_id ГГГГ-ММ-ДД ЧЧ:ММ [описание]
-    Пример: /invite @john 1 2026-03-20 15:00 Обсуждение проекта
-    """
     try:
         args = message.text.split(maxsplit=5)
         if len(args) < 5:
@@ -534,18 +500,15 @@ async def invite_handler(message: Message):
         time_str = args[4]
         details = args[5] if len(args) > 5 else ""
 
-        # Преобразуем время
         appointment_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         appointment_time = datetime.strptime(time_str, "%H:%M").time()
 
-        # Получаем ID участника по username
         try:
             participant = User.objects.get(username=username)
         except User.DoesNotExist:
             await message.answer(f"❌ Пользователь @{username} не найден в системе")
             return
 
-        # Создаём встречу
         success, msg, appointment = create_appointment(
             organizer_id=message.from_user.id,
             participant_id=participant.id,
@@ -563,7 +526,6 @@ async def invite_handler(message: Message):
                 f"📆 {appointment_date} ⏰ {appointment_time}"
             )
 
-            # Отправляем уведомление участнику
             try:
                 participant_profile = TelegramProfile.objects.get(user=participant)
                 await bot.send_message(
@@ -578,19 +540,19 @@ async def invite_handler(message: Message):
                     f"Для отмены: /cancel_appointment {appointment.id}"
                 )
             except Exception as e:
-                print(f"Не удалось отправить уведомление: {e}")
+                logger.error(f"Не удалось отправить уведомление участнику: {e}")
         else:
             await message.answer(f"❌ {msg}")
 
     except ValueError as e:
         await message.answer(f"❌ Неверный формат даты или времени: {e}")
     except Exception as e:
+        logger.error(f"Ошибка в invite_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("confirm"))
 async def confirm_handler(message: Message):
-    """Подтверждает встречу по ID: /confirm 1"""
     try:
         args = message.text.split()
         if len(args) != 2:
@@ -598,14 +560,13 @@ async def confirm_handler(message: Message):
             return
 
         appointment_id = int(args[1])
-        success, msg = confirm_appointment(appointment_id)
+        user_id = message.from_user.id
+        success, msg = confirm_appointment(appointment_id, user_id)
 
         if success:
-            # Получаем информацию о встрече для уведомления
             appointment = Appointment.objects.get(id=appointment_id)
             organizer_profile = TelegramProfile.objects.get(user=appointment.organizer)
 
-            # Отправляем уведомление организатору
             await bot.send_message(
                 organizer_profile.telegram_id,
                 f"✅ Пользователь @{message.from_user.username} подтвердил встречу!\n"
@@ -613,16 +574,16 @@ async def confirm_handler(message: Message):
                 f"📆 {appointment.date} ⏰ {appointment.time}"
             )
 
-        await message.answer(f"{'✅' if success else '❌'} {msg}")
+        await message.answer(f"{msg}")
     except ValueError:
         await message.answer("❌ ID должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в confirm_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("cancel_appointment"))
 async def cancel_appointment_handler(message: Message):
-    """Отменяет встречу по ID: /cancel_appointment 1"""
     try:
         args = message.text.split()
         if len(args) != 2:
@@ -630,14 +591,13 @@ async def cancel_appointment_handler(message: Message):
             return
 
         appointment_id = int(args[1])
-        success, msg = cancel_appointment(appointment_id)
+        user_id = message.from_user.id
+        success, msg = cancel_appointment(appointment_id, user_id)
 
         if success:
-            # Получаем информацию о встрече для уведомления
             appointment = Appointment.objects.get(id=appointment_id)
             organizer_profile = TelegramProfile.objects.get(user=appointment.organizer)
 
-            # Отправляем уведомление организатору
             await bot.send_message(
                 organizer_profile.telegram_id,
                 f"❌ Пользователь @{message.from_user.username} отменил встречу.\n"
@@ -645,16 +605,16 @@ async def cancel_appointment_handler(message: Message):
                 f"📆 {appointment.date} ⏰ {appointment.time}"
             )
 
-        await message.answer(f"{'✅' if success else '❌'} {msg}")
+        await message.answer(f"{msg}")
     except ValueError:
         await message.answer("❌ ID должен быть числом")
     except Exception as e:
+        logger.error(f"Ошибка в cancel_appointment_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("free"))
 async def check_free_handler(message: Message):
-    """Проверяет, свободен ли пользователь: /free @username ГГГГ-ММ-ДД ЧЧ:ММ"""
     try:
         args = message.text.split()
         if len(args) != 4:
@@ -682,33 +642,67 @@ async def check_free_handler(message: Message):
     except ValueError as e:
         await message.answer(f"❌ Неверный формат даты или времени: {e}")
     except Exception as e:
+        logger.error(f"Ошибка в check_free_handler: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка: {e}")
 
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user = message.from_user
-    await message.answer(
-        f"👋 Привет, {user.first_name}! Я бот-календарь.\n\n"
-        f"📅 **Основные команды:**\n"
-        f"/register - зарегистрироваться в системе\n"
-        f"/profile - личный кабинет\n"
-        f"/mycalendar - мой календарь\n\n"
-        f"📋 **События:**\n"
-        f"/create_event - создать событие\n"
-        f"/list_events - список моих событий\n"
-        f"/share_event ID - сделать событие публичным\n"
-        f"/unshare_event ID - сделать событие приватным\n"
-        f"/public - все публичные события\n"
-        f"/public @user - публичные события пользователя\n\n"
-        f"👥 **Встречи:**\n"
-        f"/invite @user event_id ГГГГ-ММ-ДД ЧЧ:ММ - пригласить\n"
-        f"/appointments - мои встречи\n"
-        f"/confirm ID - подтвердить встречу\n"
-        f"/cancel_appointment ID - отменить встречу\n"
-        f"/free @user ГГГГ-ММ-ДД ЧЧ:ММ - проверить занятость\n\n"
-        f"🔒 - личное событие, 🌐 - публичное"
+
+    # Автоматическая регистрация пользователя
+    profile, created = get_or_create_profile(
+        telegram_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name
     )
+
+    if created:
+        increment_user_count()
+        await message.answer(
+            f"👋 Привет, {user.first_name}! Я бот-календарь.\n\n"
+            f"✅ Вы автоматически зарегистрированы в системе!\n"
+            f"Теперь у вас есть личный кабинет.\n\n"
+            f"📅 **Доступные команды:**\n"
+            f"/profile - личный кабинет\n"
+            f"/mycalendar - мой календарь\n\n"
+            f"📋 **События:**\n"
+            f"/create_event - создать событие\n"
+            f"/list_events - список моих событий\n"
+            f"/share_event ID - сделать событие публичным\n"
+            f"/unshare_event ID - сделать событие приватным\n"
+            f"/public - все публичные события\n"
+            f"/public @user - публичные события пользователя\n\n"
+            f"👥 **Встречи:**\n"
+            f"/invite @user event_id ГГГГ-ММ-ДД ЧЧ:ММ - пригласить\n"
+            f"/appointments - мои встречи\n"
+            f"/confirm ID - подтвердить встречу\n"
+            f"/cancel_appointment ID - отменить встречу\n"
+            f"/free @user ГГГГ-ММ-ДД ЧЧ:ММ - проверить занятость\n\n"
+            f"🔒 - личное событие, 🌐 - публичное"
+        )
+    else:
+        await message.answer(
+            f"👋 С возвращением, {user.first_name}! Я бот-календарь.\n\n"
+            f"📅 **Доступные команды:**\n"
+            f"/profile - личный кабинет\n"
+            f"/mycalendar - мой календарь\n\n"
+            f"📋 **События:**\n"
+            f"/create_event - создать событие\n"
+            f"/list_events - список моих событий\n"
+            f"/share_event ID - сделать событие публичным\n"
+            f"/unshare_event ID - сделать событие приватным\n"
+            f"/public - все публичные события\n"
+            f"/public @user - публичные события пользователя\n\n"
+            f"👥 **Встречи:**\n"
+            f"/invite @user event_id ГГГГ-ММ-ДД ЧЧ:ММ - пригласить\n"
+            f"/appointments - мои встречи\n"
+            f"/confirm ID - подтвердить встречу\n"
+            f"/cancel_appointment ID - отменить встречу\n"
+            f"/free @user ГГГГ-ММ-ДД ЧЧ:ММ - проверить занятость\n\n"
+            f"🔒 - личное событие, 🌐 - публичное"
+        )
 
 
 # ==================== ЗАПУСК БОТА ====================

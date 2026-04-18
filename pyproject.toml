@@ -9,7 +9,6 @@ requires-python = ">=3.12,<3.15"
 dependencies = [
     "aiogram (>=3.25.0,<4.0.0)",
     "aiosqlite (>=0.22.1,<0.23.0)",
-    "psycopg2 (>=2.9.11,<3.0.0)",
     "django (>=6.0.3,<7.0.0)",
     "djangorestframework (>=3.16.1,<4.0.0)",
     "python-dotenv (>=1.1.0,<2.0.0)",
@@ -26,6 +25,11 @@ package-mode = false
 test = "pytest tests/unit -v"
 test-all = "pytest"
 test-django = "bash -c 'DJANGO_SETTINGS_MODULE=calendar_admin.settings_test pytest calendar_admin/events/tests_django -v'"
+
+[[tool.poetry.source]]
+name = "mirrors"
+url = "https://mirrors.aliyun.com/pypi/simple/"
+priority = "supplemental"
 
 [tool.pytest.ini_options]
 minversion = "6.0"
