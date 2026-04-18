@@ -64,25 +64,29 @@ def create_appointment(organizer_id, participant_id, event_id,
         return False, f"Ошибка: {e}", None
 
 
-def confirm_appointment(appointment_id):
-    """Подтверждает встречу"""
+def confirm_appointment(appointment_id, user_id):
+    """Подтверждает встречу (только участник)"""
     try:
         appointment = Appointment.objects.get(id=appointment_id)
+        if appointment.participant.id != user_id:
+            return False, "Только участник может подтвердить встречу"
         appointment.status = 'confirmed'
         appointment.save()
         return True, "Встреча подтверждена"
-    except Exception:
+    except Appointment.DoesNotExist:
         return False, "Встреча не найдена"
 
 
-def cancel_appointment(appointment_id):
-    """Отменяет встречу"""
+def cancel_appointment(appointment_id, user_id):
+    """Отменяет встречу (участник или организатор)"""
     try:
         appointment = Appointment.objects.get(id=appointment_id)
+        if appointment.participant.id != user_id and appointment.organizer.id != user_id:
+            return False, "У вас нет прав на отмену этой встречи"
         appointment.status = 'cancelled'
         appointment.save()
         return True, "Встреча отменена"
-    except Exception:
+    except Appointment.DoesNotExist:
         return False, "Встреча не найдена"
 
 

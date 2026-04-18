@@ -38,7 +38,6 @@ Thumbs.db
 
 # Docker
 *.pid
-*.pid
 
 # Прочее
 project_dump.txt
